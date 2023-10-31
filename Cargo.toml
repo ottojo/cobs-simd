@@ -2,11 +2,15 @@
 name = "cobs-simd"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/ottojo/cobs-simd"
+description = "COBS encoding library using SIMD instructions"
+license = "MIT OR JSON"
+readme = "README.md"
+keywords = ["cobs", "framing"]
+categories = ["encoding"]
 
 [lib]
 bench = false
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 
