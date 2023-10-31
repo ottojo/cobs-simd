@@ -18,8 +18,22 @@ pub fn encoded_size_upper_bound(input_size: usize) -> usize {
     input_size + (input_size + 254 - 1) / 254
 }
 
+pub enum Method {
+    Trivial,
+    SimdBlocks, // Find block boundaries (zeros/max length) using SIMD instructions
+    TwoStage,   // Find blocks of non-zero first, then divide into max-length blocks
+}
+
 // Returns number of bytes written
-pub fn cobs_encode_to(input: &[u8], output: &mut [u8]) -> usize {
+pub fn cobs_encode_to(input: &[u8], output: &mut [u8], method: Method) -> usize {
+    match method {
+        Method::Trivial => cobs_encode_to_trivial(input, output),
+        Method::SimdBlocks => cobs_encode_to_opt(input, output),
+        Method::TwoStage => cobs_encode_to_chained_iter(input, output),
+    }
+}
+
+fn cobs_encode_to_trivial(input: &[u8], output: &mut [u8]) -> usize {
     let mut written = 0;
     let mut current_block_length: u8 = 0;
 
@@ -51,7 +65,7 @@ pub fn cobs_encode_to(input: &[u8], output: &mut [u8]) -> usize {
     written
 }
 
-pub fn cobs_encode_to_opt(input: &[u8], output: &mut [u8]) -> usize {
+fn cobs_encode_to_opt(input: &[u8], output: &mut [u8]) -> usize {
     let mut out_idx = 0;
     for block in BlockIter::new(input, 254) {
         output[out_idx] = block.len() as u8 + 1;
@@ -63,7 +77,7 @@ pub fn cobs_encode_to_opt(input: &[u8], output: &mut [u8]) -> usize {
     out_idx
 }
 
-pub fn cobs_encode_to_chained_iter(input: &[u8], output: &mut [u8]) -> usize {
+fn cobs_encode_to_chained_iter(input: &[u8], output: &mut [u8]) -> usize {
     let mut out_idx = 0;
     // This finds large non-zero blocks first, and then divides them, instead of directly finding non-zero blocks with maximum size
     for large_block in BlockIter::new(input, input.len()) {
@@ -87,7 +101,7 @@ pub fn cobs_encode_to_chained_iter(input: &[u8], output: &mut [u8]) -> usize {
 }
 
 #[allow(unused)]
-pub fn cobs_encode(input: &[u8]) -> Vec<u8> {
+pub fn cobs_encode_to_vec(input: &[u8]) -> Vec<u8> {
     let mut res = vec![];
 
     let mut current_block_length: u8 = 0;
@@ -119,15 +133,6 @@ pub fn cobs_encode(input: &[u8]) -> Vec<u8> {
     res
 }
 
-pub fn encode_to_wrapper(function: fn(&[u8], &mut [u8]) -> usize) -> Box<dyn Fn(&[u8]) -> Vec<u8>> {
-    Box::new(move |input: &[u8]| {
-        let mut output_data = vec![0; encoded_size_upper_bound(input.len())];
-        let s = function(input, &mut output_data);
-        output_data.truncate(s);
-        output_data
-    })
-}
-
 #[allow(unused)]
 pub fn cobs_decode(input: &[u8]) -> Vec<u8> {
     let mut res = vec![];
@@ -151,11 +156,21 @@ pub fn cobs_decode(input: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        cobs_decode, cobs_encode, cobs_encode_to, cobs_encode_to_chained_iter, cobs_encode_to_opt,
-        encode_to_wrapper,
+        cobs_decode, cobs_encode_to_vec, cobs_encode_to_chained_iter, cobs_encode_to_opt,
+        cobs_encode_to_trivial, encoded_size_upper_bound,
     };
-
     use concat_idents::concat_idents;
+
+    type EncodingFunction = dyn Fn(&[u8]) -> Vec<u8>;
+
+    fn encode_to_wrapper(function: fn(&[u8], &mut [u8]) -> usize) -> Box<EncodingFunction> {
+        Box::new(move |input: &[u8]| {
+            let mut output_data = vec![0; encoded_size_upper_bound(input.len())];
+            let s = function(input, &mut output_data);
+            output_data.truncate(s);
+            output_data
+        })
+    }
 
     macro_rules! encode_tests {
         ($name:ident, $func:expr) => {
@@ -216,9 +231,9 @@ mod tests {
         };
     }
 
-    encode_tests!(default, cobs_encode);
+    encode_tests!(default, cobs_encode_to_vec);
 
-    encode_tests!(to_buffer, encode_to_wrapper(cobs_encode_to));
+    encode_tests!(to_buffer, encode_to_wrapper(cobs_encode_to_trivial));
 
     encode_tests!(to_buffer_opt, encode_to_wrapper(cobs_encode_to_opt));
 
