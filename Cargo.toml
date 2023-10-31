@@ -20,7 +20,7 @@ rand = "0.8"
 rand_pcg = "0.3.1"
 quickcheck = "1.0.3"
 quickcheck_macros = "1.0.0"
-concat-idents = "*"
+concat-idents = "1.1.5"
 corncobs = "0.1.3"
 
 [[bench]]
