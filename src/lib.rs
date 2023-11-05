@@ -13,23 +13,49 @@ use crate::block_iter::BlockIter;
 mod aligned_iter;
 mod block_iter;
 
+/// Determines the upper bound of the encoded message size depending on the input length
+///
+/// COBS induces a maximum of ⌈n/254⌉ bytes overhead for n data bytes.
 pub fn encoded_size_upper_bound(input_size: usize) -> usize {
-    // max ⌈n/254⌉ overhead
     input_size + (input_size + 254 - 1) / 254
 }
 
+/// Encoding method
+///
+/// These are different methods for COBS encoding.
+/// They all produce the same output, but have different runtime characteristics.
 pub enum Method {
+    /// Simple loop, sequentially processing every byte without (explicitly) using SIMD instructions.
     Trivial,
-    SimdBlocks, // Find block boundaries (zeros/max length) using SIMD instructions
-    TwoStage,   // Find blocks of non-zero first, then divide into max-length blocks
+    /// Optimized version which uses an iterator producing blocks that internally uses SIMD intrinsics for finding zeros in the data.
+    SimdBlocks,
+    /// Optimized version which separates the zero-finding and splitting of large blocks, which yields a small performance benefit over [Method::SimdBlocks]
+    TwoStage,
+    /// Direct translation of unhinged C implementation from wikipedia
+    Crazy,
 }
 
-// Returns number of bytes written
+/// COBS-encode data to a buffer.
+///
+/// User must ensure that the buffer is big enough. Actual buffer usage depends on input, but always fits within encoded_size_upper_bound(input.len()).
+///
+/// # Example
+///
+/// ```
+/// use cobs_simd::{cobs_encode_to, encoded_size_upper_bound, Method};
+///
+/// let input_data = [1, 3, 0, 7, 0, 8];
+/// let mut encoded_output = vec![0; encoded_size_upper_bound(input_data.len())];
+/// let output_length = cobs_encode_to(&input_data, &mut encoded_output, Method::TwoStage);
+/// encoded_output.truncate(output_length);
+/// ```
+///
 pub fn cobs_encode_to(input: &[u8], output: &mut [u8], method: Method) -> usize {
     match method {
         Method::Trivial => cobs_encode_to_trivial(input, output),
         Method::SimdBlocks => cobs_encode_to_opt(input, output),
         Method::TwoStage => cobs_encode_to_chained_iter(input, output),
+        Method::Crazy => cobs_encode_to_c(input, output),
     }
 }
 
@@ -63,6 +89,50 @@ fn cobs_encode_to_trivial(input: &[u8], output: &mut [u8]) -> usize {
     }
 
     written
+}
+
+fn cobs_encode_to_c(input: &[u8], output: &mut [u8]) -> usize {
+    assert!(output.len() >= encoded_size_upper_bound(input.len()));
+    assert!(!input.is_empty());
+    assert!(!output.is_empty());
+    let mut encode = &mut output[0] as *mut u8; // Encoded byte pointer
+    let mut codep = encode; // Output code pointer
+    encode = unsafe { encode.add(1) };
+    let mut code = 1; // Code value
+
+    let mut byte = &input[0] as *const u8;
+    let mut length = input.len();
+
+    while length > 0 {
+        length -= 1;
+
+        // SAFETY: byte points to input and is only incremented once per loop. loop only iterates for the length of input, guarded by length variable.
+        if unsafe { *byte } != 0 {
+            // Byte not zero, write it
+            unsafe { *encode = *byte };
+
+            code += 1;
+            encode = unsafe { encode.add(1) };
+        }
+
+        if (unsafe { *byte } == 0) || code == 0xff {
+            // Input is zero or block completed, restart
+
+            unsafe { *codep = code };
+            code = 1;
+            codep = encode;
+
+            if unsafe { *byte } == 0 || (length != 0) {
+                encode = unsafe { encode.add(1) };
+            }
+        }
+
+        byte = unsafe { byte.add(1) };
+    }
+
+    unsafe { *codep = code };
+
+    unsafe { encode.offset_from(&output[0] as *const u8) as usize }
 }
 
 fn cobs_encode_to_opt(input: &[u8], output: &mut [u8]) -> usize {
@@ -156,8 +226,8 @@ pub fn cobs_decode(input: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        cobs_decode, cobs_encode_to_vec, cobs_encode_to_chained_iter, cobs_encode_to_opt,
-        cobs_encode_to_trivial, encoded_size_upper_bound,
+        cobs_decode, cobs_encode_to_c, cobs_encode_to_chained_iter, cobs_encode_to_opt,
+        cobs_encode_to_trivial, cobs_encode_to_vec, encoded_size_upper_bound,
     };
     use concat_idents::concat_idents;
 
@@ -238,6 +308,8 @@ mod tests {
     encode_tests!(to_buffer_opt, encode_to_wrapper(cobs_encode_to_opt));
 
     encode_tests!(chained_iter, encode_to_wrapper(cobs_encode_to_chained_iter));
+
+    encode_tests!(c, encode_to_wrapper(cobs_encode_to_c));
 
     #[test]
     fn decoding_no_zeros_short() {

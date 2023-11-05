@@ -31,6 +31,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("Vec", size), slice, |b, input_data| {
             b.iter(|| cobs_encode_to_vec(input_data));
         });
+
         group.bench_with_input(
             BenchmarkId::new("ToBuffer", size),
             slice,
@@ -38,6 +39,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 b.iter(|| cobs_encode_to(input_data, output_slice, Method::Trivial));
             },
         );
+
         group.bench_with_input(
             BenchmarkId::new("BlockIter", size),
             slice,
@@ -45,6 +47,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 b.iter(|| cobs_encode_to(input_data, output_slice, Method::SimdBlocks));
             },
         );
+
+        group.bench_with_input(BenchmarkId::new("Crazy", size), slice, |b, input_data| {
+            b.iter(|| cobs_encode_to(input_data, output_slice, Method::Crazy));
+        });
 
         group.bench_with_input(
             BenchmarkId::new("corncobs", size),
