@@ -62,7 +62,7 @@ pub enum Method {
 ///
 /// let input_data = [1, 3, 0, 7, 0, 8];
 /// let mut encoded_output = vec![0; encoded_size_upper_bound(input_data.len())];
-/// let output_length = cobs_encode_to(&input_data, &mut encoded_output, Method::Simd16TwoStage);
+/// let output_length = cobs_encode_to(&input_data, &mut encoded_output, Method::StdSimd32TwoStage);
 /// encoded_output.truncate(output_length);
 /// ```
 ///
