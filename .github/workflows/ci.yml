@@ -6,6 +6,6 @@ jobs:
         name: Test
         runs-on: ubuntu-22.04
         steps:
-          - uses: dtolnay/rust-toolchain@stable
+          - uses: dtolnay/rust-toolchain@nightly
           - uses: actions/checkout@v4
           - run: cargo test
