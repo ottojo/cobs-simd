@@ -1,4 +1,5 @@
 #![feature(portable_simd)]
+#![feature(array_chunks)]
 
 #[cfg(test)]
 extern crate quickcheck;
@@ -9,9 +10,17 @@ extern crate quickcheck_macros;
 
 use std::iter::once;
 
+use block_iter::NextZeroIndex;
+use next_zero_simd_128::SimdBlocks16;
+use next_zero_std_simd::SimdBlocksGeneric;
+
+use strum_macros::{Display, EnumIter};
+
 use crate::block_iter::BlockIter;
 mod aligned_iter;
 mod block_iter;
+mod next_zero_simd_128;
+mod next_zero_std_simd;
 
 /// Determines the upper bound of the encoded message size depending on the input length
 ///
@@ -24,15 +33,22 @@ pub fn encoded_size_upper_bound(input_size: usize) -> usize {
 ///
 /// These are different methods for COBS encoding.
 /// They all produce the same output, but have different runtime characteristics.
+#[derive(Clone, Display, EnumIter)]
 pub enum Method {
     /// Simple loop, sequentially processing every byte without (explicitly) using SIMD instructions.
     Trivial,
-    /// Optimized version which uses an iterator producing blocks that internally uses SIMD intrinsics for finding zeros in the data.
-    SimdBlocks,
-    /// Optimized version which separates the zero-finding and splitting of large blocks, which yields a small performance benefit over [Method::SimdBlocks]
-    TwoStage,
     /// Direct translation of unhinged C implementation from wikipedia
     Crazy,
+    /// Optimized version which uses an iterator producing blocks that internally uses SIMD intrinsics for finding zeros in the data.
+    Simd16,
+    /// Versions that use std::Simd operations to be generic over vector length
+    StdSimd8,
+    StdSimd16,
+    StdSimd32,
+    /// Versions that use std::Simd operations to be generic over vector length and separate the zero-finding and splitting of large blocks, which may yield a small performance benefit
+    StdSimd8TwoStage,
+    StdSimd16TwoStage,
+    StdSimd32TwoStage,
 }
 
 /// COBS-encode data to a buffer.
@@ -46,17 +62,40 @@ pub enum Method {
 ///
 /// let input_data = [1, 3, 0, 7, 0, 8];
 /// let mut encoded_output = vec![0; encoded_size_upper_bound(input_data.len())];
-/// let output_length = cobs_encode_to(&input_data, &mut encoded_output, Method::TwoStage);
+/// let output_length = cobs_encode_to(&input_data, &mut encoded_output, Method::Simd16TwoStage);
 /// encoded_output.truncate(output_length);
 /// ```
 ///
 pub fn cobs_encode_to(input: &[u8], output: &mut [u8], method: Method) -> usize {
     match method {
         Method::Trivial => cobs_encode_to_trivial(input, output),
-        Method::SimdBlocks => cobs_encode_to_opt(input, output),
-        Method::TwoStage => cobs_encode_to_chained_iter(input, output),
+        Method::Simd16 => cobs_encode_to_opt(input, output),
         Method::Crazy => cobs_encode_to_c(input, output),
+        Method::StdSimd8 => cobs_encode_to_std::<8>(input, output),
+        Method::StdSimd16 => cobs_encode_to_std::<16>(input, output),
+        Method::StdSimd32 => cobs_encode_to_std::<32>(input, output),
+        Method::StdSimd8TwoStage => {
+            cobs_encode_to_chained_iter::<SimdBlocksGeneric<8>>(input, output)
+        }
+        Method::StdSimd16TwoStage => {
+            cobs_encode_to_chained_iter::<SimdBlocksGeneric<16>>(input, output)
+        }
+        Method::StdSimd32TwoStage => {
+            cobs_encode_to_chained_iter::<SimdBlocksGeneric<32>>(input, output)
+        }
     }
+}
+
+fn cobs_encode_to_std<const N: usize>(input: &[u8], output: &mut [u8]) -> usize {
+    let mut out_idx = 0;
+    for block in BlockIter::<SimdBlocksGeneric<32>>::new(input, 254) {
+        output[out_idx] = block.len() as u8 + 1;
+        // Copy all
+        output[out_idx + 1..out_idx + 1 + block.len()].copy_from_slice(block);
+        out_idx += block.len() + 1;
+    }
+
+    out_idx
 }
 
 fn cobs_encode_to_trivial(input: &[u8], output: &mut [u8]) -> usize {
@@ -137,7 +176,7 @@ fn cobs_encode_to_c(input: &[u8], output: &mut [u8]) -> usize {
 
 fn cobs_encode_to_opt(input: &[u8], output: &mut [u8]) -> usize {
     let mut out_idx = 0;
-    for block in BlockIter::new(input, 254) {
+    for block in BlockIter::<SimdBlocks16>::new(input, 254) {
         output[out_idx] = block.len() as u8 + 1;
         // Copy all
         output[out_idx + 1..out_idx + 1 + block.len()].copy_from_slice(block);
@@ -147,10 +186,13 @@ fn cobs_encode_to_opt(input: &[u8], output: &mut [u8]) -> usize {
     out_idx
 }
 
-fn cobs_encode_to_chained_iter(input: &[u8], output: &mut [u8]) -> usize {
+fn cobs_encode_to_chained_iter<ZeroMethod: NextZeroIndex>(
+    input: &[u8],
+    output: &mut [u8],
+) -> usize {
     let mut out_idx = 0;
     // This finds large non-zero blocks first, and then divides them, instead of directly finding non-zero blocks with maximum size
-    for large_block in BlockIter::new(input, input.len()) {
+    for large_block in BlockIter::<ZeroMethod>::new(input, input.len()) {
         // Manual flat_map, since chunking empty slice does not yield an empty slice, but we want to preserve it...
         if !large_block.is_empty() {
             for block in large_block.chunks(254) {
@@ -228,6 +270,7 @@ mod tests {
     use crate::{
         cobs_decode, cobs_encode_to_c, cobs_encode_to_chained_iter, cobs_encode_to_opt,
         cobs_encode_to_trivial, cobs_encode_to_vec, encoded_size_upper_bound,
+        next_zero_simd_128::SimdBlocks16, next_zero_std_simd::SimdBlocksGeneric,
     };
     use concat_idents::concat_idents;
 
@@ -307,7 +350,15 @@ mod tests {
 
     encode_tests!(to_buffer_opt, encode_to_wrapper(cobs_encode_to_opt));
 
-    encode_tests!(chained_iter, encode_to_wrapper(cobs_encode_to_chained_iter));
+    encode_tests!(
+        chained_iter,
+        encode_to_wrapper(cobs_encode_to_chained_iter::<SimdBlocks16>)
+    );
+
+    encode_tests!(
+        chained_iter_32,
+        encode_to_wrapper(cobs_encode_to_chained_iter::<SimdBlocksGeneric<32>>)
+    );
 
     encode_tests!(c, encode_to_wrapper(cobs_encode_to_c));
 

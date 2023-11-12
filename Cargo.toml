@@ -13,6 +13,9 @@ categories = ["encoding"]
 bench = false
 
 [dependencies]
+num = "0.4.1"
+strum = "0.25.0"
+strum_macros = "0.25.3"
 
 [dev-dependencies]
 criterion = "0.5.1"

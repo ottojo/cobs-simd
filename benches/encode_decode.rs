@@ -1,16 +1,17 @@
 use std::{cmp::max, time::Duration};
 
-use cobs_simd::{cobs_encode_to, cobs_encode_to_vec, encoded_size_upper_bound, Method};
+use cobs_simd::{cobs_encode_to, encoded_size_upper_bound, Method};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::{RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
+use strum::IntoEnumIterator;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("encoding");
     let seed: <Pcg64Mcg as SeedableRng>::Seed = Default::default();
     let mut rng = Pcg64Mcg::from_seed(seed);
 
-    for size in (1000..=10000).step_by(1000) {
+    for size in [1000, 5000, 10000] {
         group.throughput(criterion::Throughput::Bytes(size as u64));
         group.warm_up_time(Duration::from_millis(500));
         group.measurement_time(Duration::from_secs(1));
@@ -28,30 +29,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         ];
         let output_slice: &mut [u8] = &mut output_data;
 
-        group.bench_with_input(BenchmarkId::new("Vec", size), slice, |b, input_data| {
-            b.iter(|| cobs_encode_to_vec(input_data));
-        });
-
-        group.bench_with_input(
-            BenchmarkId::new("ToBuffer", size),
-            slice,
-            |b, input_data| {
-                b.iter(|| cobs_encode_to(input_data, output_slice, Method::Trivial));
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("BlockIter", size),
-            slice,
-            |b, input_data| {
-                b.iter(|| cobs_encode_to(input_data, output_slice, Method::SimdBlocks));
-            },
-        );
-
-        group.bench_with_input(BenchmarkId::new("Crazy", size), slice, |b, input_data| {
-            b.iter(|| cobs_encode_to(input_data, output_slice, Method::Crazy));
-        });
-
         group.bench_with_input(
             BenchmarkId::new("corncobs", size),
             slice,
@@ -60,9 +37,15 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(BenchmarkId::new("chained", size), slice, |b, input_data| {
-            b.iter(|| cobs_encode_to(input_data, output_slice, Method::TwoStage));
-        });
+        for method in Method::iter() {
+            group.bench_with_input(
+                BenchmarkId::new(format!("{method}"), size),
+                slice,
+                |b, input_data| {
+                    b.iter(|| cobs_encode_to(input_data, output_slice, method.clone()));
+                },
+            );
+        }
     }
     group.finish();
 }

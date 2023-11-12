@@ -1,69 +1,43 @@
-use std::arch::x86_64::*;
-use std::cmp::min;
-use std::simd::u8x16;
+use std::{cmp::min, marker::PhantomData};
 
 #[allow(unused)]
 use crate::aligned_iter::AlignedIter;
 
-pub struct BlockIter<'a> {
+pub struct BlockIter<'a, ZeroIndexMethod>
+where
+    ZeroIndexMethod: NextZeroIndex,
+{
     input_data: &'a [u8], // BlockIter can't outlive input data
     processed: usize,     // Number of bytes already processed
     max_block_size: usize,
+    zero_index_method: PhantomData<ZeroIndexMethod>,
 }
 
-impl<'a> BlockIter<'a> {
-    pub fn new(input_data: &[u8], max_block_size: usize) -> BlockIter {
+impl<'a, T: NextZeroIndex + Default> BlockIter<'a, T> {
+    pub fn new(input_data: &[u8], max_block_size: usize) -> BlockIter<T> {
         BlockIter {
             input_data,
             processed: 0,
             max_block_size,
+            zero_index_method: Default::default(),
         }
     }
 }
 
-#[allow(unused)]
-fn next_zero_index(data: &[u8]) -> Option<usize> {
-    data.iter().position(|x| *x == 0)
+pub trait NextZeroIndex: Default {
+    fn next_zero_index(data: &[u8]) -> Option<usize>;
 }
 
-fn next_zero_index_simd(data: &[u8]) -> Option<usize> {
-    let mut nonzero_bytes = 0;
+#[derive(Default)]
+struct IterPosition {}
 
-    //for block in AlignedIter::new(data, 16) { // worse performance :(
-    for block in data.chunks(16) {
-        if block.len() != 16 {
-            for b in block {
-                if *b == 0 {
-                    return Some(nonzero_bytes);
-                } else {
-                    nonzero_bytes += 1;
-                }
-            }
-            continue;
-        }
-
-        // TODO: 256bit vectors with _mm256_cmpeq_epi8 and _mm256_movemask_epi8 and _lzcnt_u32
-
-        let v = u8x16::from_slice(block);
-        let res = unsafe {
-            _mm_cmpestri(
-                _mm_setzero_si128(),
-                1,
-                __m128i::from(v),
-                16,
-                _SIDD_CMP_EQUAL_ORDERED,
-            )
-        };
-        nonzero_bytes += res as usize;
-        if res < 16 {
-            return Some(nonzero_bytes);
-        }
+impl NextZeroIndex for IterPosition {
+    fn next_zero_index(data: &[u8]) -> Option<usize> {
+        data.iter().position(|x| *x == 0)
     }
-
-    None
 }
 
-impl<'a> Iterator for BlockIter<'a> {
+impl<'a, T: NextZeroIndex> Iterator for BlockIter<'a, T> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -83,7 +57,8 @@ impl<'a> Iterator for BlockIter<'a> {
         let upper_bound = min(start_index + self.max_block_size, self.input_data.len());
 
         //let zero_index = next_zero_index(&self.input_data[start_index..upper_bound]);
-        let zero_index = next_zero_index_simd(&self.input_data[start_index..upper_bound]);
+        let zero_index =
+            <T as NextZeroIndex>::next_zero_index(&self.input_data[start_index..upper_bound]);
         match zero_index {
             Some(i) => {
                 // Process data inclusive zero at i
@@ -115,11 +90,13 @@ mod tests {
     #[test]
     fn iter() {
         let data = [1, 2, 3, 4, 0, 1, 2, 3];
-        let blocks: Vec<_> = BlockIter::new(&data, 254).collect();
+        let blocks: Vec<_> = BlockIter::<SimdBlocks16>::new(&data, 254).collect();
 
         assert_eq!(blocks[0], &[1, 2, 3, 4]);
         assert_eq!(blocks[1], &[1, 2, 3]);
     }
+
+    use crate::next_zero_simd_128::SimdBlocks16;
 
     use super::BlockIter;
     #[test]
@@ -141,7 +118,7 @@ mod tests {
 
     #[quickcheck]
     fn max_block_size(input_data: Vec<u8>) -> bool {
-        for b in BlockIter::new(&input_data, 254) {
+        for b in BlockIter::<SimdBlocks16>::new(&input_data, 254) {
             if b.len() > 254 {
                 return false;
             }
@@ -155,7 +132,7 @@ mod tests {
     }
 
     fn blocks_dont_contain_zero(input_data: Vec<u8>) -> bool {
-        for block in BlockIter::new(&input_data, 254) {
+        for block in BlockIter::<SimdBlocks16>::new(&input_data, 254) {
             if block.len() > 1 {
                 // Blocks of length 1 only contain a zero
                 for byte in block.iter().take(block.len() - 1) {
