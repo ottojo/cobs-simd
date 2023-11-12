@@ -1,6 +1,6 @@
 [package]
 name = "cobs-simd"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 repository = "https://github.com/ottojo/cobs-simd"
 description = "COBS encoding library using SIMD instructions"
