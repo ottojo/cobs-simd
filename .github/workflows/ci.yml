@@ -7,5 +7,7 @@ jobs:
         runs-on: ubuntu-22.04
         steps:
           - uses: dtolnay/rust-toolchain@nightly
+            with:
+              components: rust-src
           - uses: actions/checkout@v4
           - run: cargo test
